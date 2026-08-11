@@ -2,11 +2,16 @@
   "name": "twinpass-web",
   "version": "0.1.0",
   "private": true,
+  "allowScripts": {
+    "unrs-resolver": true
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check": "npm run lint && npm run build",
+    "simulate": "node --env-file-if-exists=.env.local scripts/send-demo-event.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
