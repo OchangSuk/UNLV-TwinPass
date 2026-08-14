@@ -11,7 +11,13 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "tmp/**",
     "next-env.d.ts",
+    // Generated Edge Impulse/Emscripten runtime; linting it produces false positives.
+    "public/models/vision/**",
+    "public/models/vision-v2/**",
+    // Generated ONNX Runtime browser assets.
+    "public/models/yolo/runtime/**",
   ]),
 ]);
 
