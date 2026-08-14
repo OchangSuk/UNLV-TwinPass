@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { personIds, registeredPersonIds } from "@/lib/domain";
+import { personIds } from "@/lib/domain";
 import { teamProfiles, type RegisteredPersonId } from "@/lib/people";
 
 type Phase = "IDLE" | "MODEL_LOADING" | "CAMERA" | "VISION" | "AUDIO_READY" | "RECORDING" | "VOICE" | "SUCCESS" | "REJECTED" | "ERROR";
@@ -28,6 +28,7 @@ const AUDIO_RECORDING_SECONDS = 1;
 export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | Promise<void> }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cameraRef = useRef<MediaStream | null>(null);
   const serialPortRef = useRef<TwinPassSerialPort | null>(null);
   const serialReaderRef = useRef<SerialReader | null>(null);
   const serialWriterRef = useRef<SerialWriter | null>(null);
@@ -40,7 +41,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const countdownTimerRef = useRef<number | null>(null);
 
   const [phase, setPhase] = useState<Phase>("IDLE");
-  const [visionPerson, setVisionPerson] = useState<RegisteredPersonId>("changsuk");
+  const [visionPerson, setVisionPerson] = useState<PersonId>("changsuk");
   const [recognized, setRecognized] = useState<RegisteredPersonId | null>(null);
   const [visionConfidence, setVisionConfidence] = useState(0);
   const [voiceConfidence, setVoiceConfidence] = useState(0);
@@ -55,6 +56,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
 
   useEffect(() => {
     return () => {
+      cameraRef.current?.getTracks().forEach((track) => track.stop());
       if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
       void serialReaderRef.current?.cancel();
       serialReaderRef.current?.releaseLock();
@@ -70,7 +72,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
       if (target?.matches("input, select, textarea")) return;
 
       const index = Number(event.key) - 1;
-      const person = registeredPersonIds[index];
+      const person = personIds[index];
       if (!person) return;
 
       setVisionPerson(person);
@@ -80,6 +82,39 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     window.addEventListener("keydown", selectVisionPerson);
     return () => window.removeEventListener("keydown", selectVisionPerson);
   }, [phase]);
+
+  async function captureVisionFrame() {
+    setHasFrame(false);
+    setPhase("CAMERA");
+    setMessage("얼굴을 화면 중앙에 맞춰주세요.");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      cameraRef.current = stream;
+
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas) throw new Error("카메라 화면을 준비하지 못했습니다.");
+
+      video.srcObject = stream;
+      await video.play();
+      await wait(1_000);
+
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 360;
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      setHasFrame(true);
+      setPhase("VISION");
+      setMessage("Vision 인증을 진행하고 있습니다.");
+    }
+    finally {
+      cameraRef.current?.getTracks().forEach((track) => track.stop());
+      cameraRef.current = null;
+    }
+  }
 
   async function persistResult(personId: PersonId, visionVerified: boolean, voiceVerified: boolean, visionScore: number, voiceScore: number | null) {
     const response = await fetch("/api/v1/demo-event", {
@@ -225,8 +260,34 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   }
 
   async function startAudioTest() {
-    setMessage("Vision 인증을 진행하고 있습니다.");
     setLastSerialEvent("Vision 인증 시작");
+
+    try {
+      await captureVisionFrame();
+    }
+    catch (error) {
+      console.error(error);
+      setPhase("ERROR");
+      setMessage("카메라 권한 또는 연결 상태를 확인해주세요.");
+      setLastSerialEvent("카메라 시작 실패");
+      return;
+    }
+
+    if (visionPerson === "OTHER") {
+      setRecognized(null);
+      recognizedRef.current = null;
+      pendingAudioRef.current = null;
+      setVisionConfidence(1);
+      visionConfidenceRef.current = 1;
+      setVoiceConfidence(0);
+      await wait(350);
+      await persistResult("OTHER", false, false, 1, null);
+      setPhase("REJECTED");
+      setMessage("등록된 팀원을 확인하지 못했습니다.");
+      setLastSerialEvent("Vision 거절 · Audio 미실행");
+      return;
+    }
+
     if (!nanoReadyRef.current) {
       setSerialStatus("Nano 응답 재확인 중");
       try {
