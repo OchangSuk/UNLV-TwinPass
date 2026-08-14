@@ -47,10 +47,10 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const [voiceConfidence, setVoiceConfidence] = useState(0);
   const [hasFrame, setHasFrame] = useState(false);
   const [nanoConnected, setNanoConnected] = useState(false);
-  const [nanoReady, setNanoReady] = useState(false);
+  const [, setNanoReady] = useState(false);
   const [audioTestMode, setAudioTestMode] = useState(false);
-  const [serialStatus, setSerialStatus] = useState("Not connected");
-  const [lastSerialEvent, setLastSerialEvent] = useState("None");
+  const [, setSerialStatus] = useState("Not connected");
+  const [, setLastSerialEvent] = useState("None");
   const [recordingSeconds, setRecordingSeconds] = useState(AUDIO_RECORDING_SECONDS);
   const [message, setMessage] = useState("Connect the Nano to start attendance verification.");
 
@@ -449,17 +449,6 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
             <i />
             <Step number="3" label="Done" active={phase === "SUCCESS"} done={phase === "SUCCESS"} />
           </div>
-
-          {phase === "IDLE" && nanoConnected && (
-            <div className="demo-settings">
-              <p style={{ margin: 0, color: nanoReady ? "#159a6c" : "#b7791f", fontSize: 9 }}>
-                {serialStatus}
-              </p>
-              <p style={{ margin: "4px 0 0", color: "#8d97a9", fontSize: 8, overflowWrap: "anywhere" }}>
-                Last event: {lastSerialEvent}
-              </p>
-            </div>
-          )}
 
           <div className="kiosk-actions simple-actions">
             {phase === "IDLE" && !nanoConnected && <button className="secondary-action" onClick={connectNano}>Connect Nano</button>}
