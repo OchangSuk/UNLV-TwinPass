@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { personIds, registeredPersonIds } from "@/lib/domain";
 import { teamProfiles, type RegisteredPersonId } from "@/lib/people";
-import { identifyPersonFromImage, loadVisionModel } from "@/lib/vision-inference";
 
 type Phase = "IDLE" | "MODEL_LOADING" | "CAMERA" | "VISION" | "AUDIO_READY" | "RECORDING" | "VOICE" | "SUCCESS" | "REJECTED" | "ERROR";
 type PersonId = (typeof personIds)[number];
@@ -29,7 +28,6 @@ const AUDIO_RECORDING_SECONDS = 1;
 export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | Promise<void> }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cameraRef = useRef<MediaStream | null>(null);
   const serialPortRef = useRef<TwinPassSerialPort | null>(null);
   const serialReaderRef = useRef<SerialReader | null>(null);
   const serialWriterRef = useRef<SerialWriter | null>(null);
@@ -46,7 +44,6 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const [visionConfidence, setVisionConfidence] = useState(0);
   const [voiceConfidence, setVoiceConfidence] = useState(0);
   const [hasFrame, setHasFrame] = useState(false);
-  const [modelReady, setModelReady] = useState(false);
   const [nanoConnected, setNanoConnected] = useState(false);
   const [nanoReady, setNanoReady] = useState(false);
   const [audioTestMode, setAudioTestMode] = useState(false);
@@ -54,12 +51,10 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const [serialStatus, setSerialStatus] = useState("연결 안 됨");
   const [lastSerialEvent, setLastSerialEvent] = useState("없음");
   const [recordingSeconds, setRecordingSeconds] = useState(AUDIO_RECORDING_SECONDS);
-  const [message, setMessage] = useState("카메라를 시작해주세요.");
+  const [message, setMessage] = useState("Demo Vision 사용자를 선택하고 Nano를 연결해주세요.");
 
   useEffect(() => {
-    void loadVisionModel().then(() => setModelReady(true)).catch(() => setModelReady(false));
     return () => {
-      cameraRef.current?.getTracks().forEach((track) => track.stop());
       if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
       void serialReaderRef.current?.cancel();
       serialReaderRef.current?.releaseLock();
@@ -84,87 +79,6 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     await onEventCreated?.();
   }
 
-  function captureDisplayFrame() {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 360;
-    canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
-    setHasFrame(true);
-  }
-
-  async function startCamera() {
-    try {
-      setRecognized(null);
-      recognizedRef.current = null;
-      pendingAudioRef.current = null;
-      setVisionConfidence(0);
-      setVoiceConfidence(0);
-      setAudioTestMode(false);
-      audioTestModeRef.current = false;
-      setHasFrame(false);
-      setPhase(modelReady ? "CAMERA" : "MODEL_LOADING");
-      setMessage(modelReady ? "얼굴을 화면 중앙에 맞춰주세요." : "Vision 모델을 불러오고 있습니다.");
-      await loadVisionModel();
-      setModelReady(true);
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      cameraRef.current = stream;
-      const video = videoRef.current;
-      if (!video) throw new Error("카메라 화면을 준비하지 못했습니다.");
-      video.srcObject = stream;
-      await video.play();
-      setPhase("CAMERA");
-      setMessage("얼굴을 화면 중앙에 맞춰주세요.");
-      await wait(900);
-
-      setPhase("VISION");
-      setMessage("Vision 모델이 사용자를 확인하고 있습니다.");
-      const result = await identifyPersonFromImage(video);
-      captureDisplayFrame();
-      await applyVisionResult(result);
-    }
-    catch (error) {
-      console.error(error);
-      setPhase("ERROR");
-      setMessage("카메라 권한 또는 Vision 모델을 확인해주세요.");
-    }
-    finally {
-      cameraRef.current?.getTracks().forEach((track) => track.stop());
-      cameraRef.current = null;
-    }
-  }
-
-  async function applyVisionResult(result: { person_id: PersonId; confidence: number }) {
-    setVisionConfidence(result.confidence);
-    visionConfidenceRef.current = result.confidence;
-
-    if (result.person_id === "OTHER") {
-      await persistResult("OTHER", false, false, result.confidence, null);
-      setPhase("REJECTED");
-      setMessage("등록된 팀원을 찾지 못했습니다.");
-      return;
-    }
-
-    setRecognized(result.person_id);
-    recognizedRef.current = result.person_id;
-    pendingAudioRef.current = result.person_id;
-    setAudioTestMode(false);
-    audioTestModeRef.current = false;
-
-    if (nanoReadyRef.current) {
-      await armAudio(result.person_id);
-    }
-    else {
-      setPhase("AUDIO_READY");
-      setMessage(`${result.person_id} 확인 · Nano를 연결하면 음성 인증이 자동으로 시작됩니다.`);
-    }
-  }
-
   async function connectNano() {
     try {
       if (!navigator.serial) throw new Error("Web Serial API를 지원하지 않는 브라우저입니다.");
@@ -185,7 +99,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
       if (ready) {
         setMessage(recognizedRef.current
           ? "Nano가 준비되었습니다. Audio 인증을 시작합니다."
-          : "Nano가 준비되었습니다. Vision 또는 Audio 단독 테스트를 시작해주세요.");
+          : "Nano가 준비되었습니다. Demo Vision 사용자를 선택하고 Audio 인증을 시작해주세요.");
       }
       else {
         setSerialStatus("포트 연결됨 · 10초 동안 펌웨어 응답 없음");
@@ -258,7 +172,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
         setSerialStatus("Nano 펌웨어 준비 완료");
         const pending = pendingAudioRef.current;
         if (pending) void armAudio(pending);
-        else if (!recognizedRef.current) setMessage("Nano가 준비되었습니다. Vision 또는 Audio 단독 테스트를 시작해주세요.");
+        else if (!recognizedRef.current) setMessage("Nano가 준비되었습니다. Demo Vision 사용자를 선택하고 Audio 인증을 시작해주세요.");
       }
       else if (type === "audio_armed") {
         setSerialStatus("1초 Audio 추론 중");
@@ -293,8 +207,8 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   }
 
   async function startAudioTest() {
-    setMessage(`${audioTestPerson} Audio 테스트 버튼을 눌렀습니다.`);
-    setLastSerialEvent("Audio 테스트 요청");
+    setMessage(`${audioTestPerson}을 Demo Vision 사용자로 설정했습니다.`);
+    setLastSerialEvent(`Demo Vision: ${audioTestPerson}`);
     if (!nanoReadyRef.current) {
       setSerialStatus("Nano 응답 재확인 중");
       try {
@@ -315,23 +229,25 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     }
 
     try {
-      setSerialStatus("Audio 테스트 시작");
+      setSerialStatus("Demo Vision 완료 · Audio 인증 시작");
       setLastSerialEvent(`ARM:${audioTestPerson} 전송 준비`);
-      setAudioTestMode(true);
-      audioTestModeRef.current = true;
+      setAudioTestMode(false);
+      audioTestModeRef.current = false;
       setRecognized(audioTestPerson);
       recognizedRef.current = audioTestPerson;
       pendingAudioRef.current = null;
-      setVisionConfidence(0);
-      visionConfidenceRef.current = 0;
+      setVisionConfidence(1);
+      visionConfidenceRef.current = 1;
       setVoiceConfidence(0);
+      setPhase("VISION");
+      await wait(350);
       await armAudio(audioTestPerson);
       setLastSerialEvent(`ARM:${audioTestPerson} 전송 완료`);
     }
     catch (error) {
       setPhase("ERROR");
       setSerialStatus("ARM 명령 전송 실패");
-      setMessage("Audio 테스트 시작 명령을 Nano에 보내지 못했습니다.");
+      setMessage("Audio 인증 시작 명령을 Nano에 보내지 못했습니다.");
       setLastSerialEvent(error instanceof Error ? error.message : "ARM 전송 실패");
       return;
     }
@@ -383,7 +299,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     setHasFrame(false);
     setRecordingSeconds(AUDIO_RECORDING_SECONDS);
     setAudioTestMode(false);
-    setMessage("카메라를 시작해주세요.");
+    setMessage("Demo Vision 사용자를 선택하고 Nano를 연결해주세요.");
   }
 
   const profile = recognized ? teamProfiles[recognized] : null;
@@ -393,16 +309,16 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     <main className="public-kiosk">
       <header className="public-kiosk-header">
         <div className="brand public-brand"><span className="brand-mark">T</span><span>TwinPass</span></div>
-        <span className="local-badge"><i />{modelReady ? "Vision model ready" : "Loading local model"}</span>
+        <span className="local-badge"><i />Demo Vision · Nano Audio</span>
       </header>
 
       <div className="simple-kiosk-grid">
-        <section className="simple-camera-card" aria-label="출석 인증 카메라">
-          <div className="simple-card-title"><div><small>CAMERA</small><strong>얼굴 인증</strong></div><span>01</span></div>
+        <section className="simple-camera-card" aria-label="Demo Vision 사용자 설정">
+          <div className="simple-card-title"><div><small>DEMO VISION</small><strong>사용자 설정</strong></div><span>01</span></div>
           <div className={`camera-stage simple-camera phase-${phase.toLowerCase()}`}>
             <video ref={videoRef} muted playsInline className={hasFrame ? "hidden-media" : ""} />
             <canvas ref={canvasRef} className={hasFrame ? "" : "hidden-media"} />
-            {!hasFrame && phase === "IDLE" && <div className="camera-empty"><span>◎</span><p>Camera ready</p></div>}
+            {!hasFrame && phase === "IDLE" && <div className="camera-empty"><span>{audioTestPerson[0].toUpperCase()}</span><p>Demo user · {audioTestPerson}</p></div>}
             <div className="face-guide"><i /><i /><i /><i /></div>
             <span className="camera-live"><b />{phase === "CAMERA" ? "CAPTURING" : phase === "VISION" ? "ANALYZING" : "LOCAL"}</span>
             {busy && <div className="scan-line" />}
@@ -415,7 +331,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
             )}
             {phase === "REJECTED" && <div className="reject-overlay"><b>×</b><strong>인증 실패</strong></div>}
           </div>
-          <p className="privacy-note">사진과 영상은 서버에 저장되지 않습니다.</p>
+          <p className="privacy-note">카메라는 사용하지 않으며 선택된 사용자로 Vision을 가정합니다.</p>
         </section>
 
         <section className="simple-checkin-card">
@@ -434,16 +350,16 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
           )}
 
           <div className="simple-steps">
-            <Step number="1" label="Face" active={["MODEL_LOADING", "CAMERA", "VISION"].includes(phase)} done={Boolean(recognized)} />
+            <Step number="1" label="Demo" active={phase === "VISION"} done={Boolean(recognized)} />
             <i />
             <Step number="2" label="Voice" active={["AUDIO_READY", "RECORDING", "VOICE"].includes(phase)} done={phase === "SUCCESS"} />
             <i />
             <Step number="3" label="Done" active={phase === "SUCCESS"} done={phase === "SUCCESS"} />
           </div>
 
-          {phase === "IDLE" && nanoConnected && (
+          {phase === "IDLE" && (
             <div className="demo-settings">
-              <label>Audio 테스트 사용자
+              <label>Demo Vision 사용자
                 <select
                   value={audioTestPerson}
                   onChange={(event) => setAudioTestPerson(event.target.value as RegisteredPersonId)}
@@ -452,19 +368,22 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
                   {registeredPersonIds.map((person) => <option key={person} value={person}>{person}</option>)}
                 </select>
               </label>
-              <p style={{ margin: "9px 0 0", color: nanoReady ? "#159a6c" : "#b7791f", fontSize: 9 }}>
-                {serialStatus}
-              </p>
-              <p style={{ margin: "4px 0 0", color: "#8d97a9", fontSize: 8, overflowWrap: "anywhere" }}>
-                마지막 이벤트: {lastSerialEvent}
-              </p>
+              {nanoConnected && (
+                <>
+                  <p style={{ margin: "9px 0 0", color: nanoReady ? "#159a6c" : "#b7791f", fontSize: 9 }}>
+                    {serialStatus}
+                  </p>
+                  <p style={{ margin: "4px 0 0", color: "#8d97a9", fontSize: 8, overflowWrap: "anywhere" }}>
+                    마지막 이벤트: {lastSerialEvent}
+                  </p>
+                </>
+              )}
             </div>
           )}
 
           <div className="kiosk-actions simple-actions">
             {phase === "IDLE" && !nanoConnected && <button className="secondary-action" onClick={connectNano}>Nano 연결</button>}
-            {phase === "IDLE" && <button className="primary-action" onClick={startCamera}>Vision 시작</button>}
-            {phase === "IDLE" && nanoConnected && <button className="record-action" onClick={startAudioTest}><span />{nanoReady ? "1초 Audio 단독 테스트" : "Nano 응답 확인 및 Audio 테스트"}</button>}
+            {phase === "IDLE" && nanoConnected && <button className="record-action" onClick={startAudioTest}><span />{nanoReady ? "Demo Vision → 1초 Audio 인증" : "Nano 응답 확인 후 Audio 인증"}</button>}
             {phase === "AUDIO_READY" && !nanoConnected && <button className="record-action" onClick={connectNano}><span />Nano 연결 후 음성 인증</button>}
             {phase === "ERROR" && <button className="primary-action" onClick={reset}>다시 시도</button>}
             {["REJECTED", "SUCCESS"].includes(phase) && <button className="primary-action" onClick={reset}>처음으로</button>}
