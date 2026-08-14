@@ -101,14 +101,19 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
 
       video.srcObject = stream;
       await video.play();
-      await wait(1_000);
+
+      for (let countdown = 3; countdown >= 1; countdown -= 1) {
+        setMessage(`Hold still · Capturing in ${countdown}`);
+        await wait(1_000);
+      }
 
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 360;
       canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
       setHasFrame(true);
       setPhase("VISION");
-      setMessage("Verifying your identity with Vision.");
+      setMessage("Analyzing the Vision result.");
+      await wait(1_000);
     }
     finally {
       cameraRef.current?.getTracks().forEach((track) => track.stop());
@@ -288,6 +293,22 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
       return;
     }
 
+    setAudioTestMode(false);
+    audioTestModeRef.current = false;
+    setRecognized(visionPerson);
+    recognizedRef.current = visionPerson;
+    setVisionConfidence(1);
+    visionConfidenceRef.current = 1;
+    setVoiceConfidence(0);
+
+    if (!nanoConnected || !serialWriterRef.current) {
+      pendingAudioRef.current = visionPerson;
+      setPhase("AUDIO_READY");
+      setMessage("Vision verified. Connect the Nano to continue with voice verification.");
+      setLastSerialEvent("Vision verified · Waiting for Nano");
+      return;
+    }
+
     if (!nanoReadyRef.current) {
       setSerialStatus("Rechecking Nano response");
       try {
@@ -310,14 +331,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
     try {
       setSerialStatus("Vision complete · Starting audio verification");
       setLastSerialEvent(`Preparing ARM:${visionPerson}`);
-      setAudioTestMode(false);
-      audioTestModeRef.current = false;
-      setRecognized(visionPerson);
-      recognizedRef.current = visionPerson;
       pendingAudioRef.current = null;
-      setVisionConfidence(1);
-      visionConfidenceRef.current = 1;
-      setVoiceConfidence(0);
       setPhase("VISION");
       await wait(350);
       await armAudio(visionPerson);
@@ -449,7 +463,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
 
           <div className="kiosk-actions simple-actions">
             {phase === "IDLE" && !nanoConnected && <button className="secondary-action" onClick={connectNano}>Connect Nano</button>}
-            {phase === "IDLE" && nanoConnected && <button className="record-action" onClick={startAudioTest}><span />{nanoReady ? "Start Verification" : "Check Nano and Verify"}</button>}
+            {phase === "IDLE" && <button className="record-action" onClick={startAudioTest}><span />Start Verification</button>}
             {phase === "AUDIO_READY" && !nanoConnected && <button className="record-action" onClick={connectNano}><span />Connect Nano for Voice Verification</button>}
             {phase === "ERROR" && <button className="primary-action" onClick={reset}>Try Again</button>}
             {["REJECTED", "SUCCESS"].includes(phase) && <button className="primary-action" onClick={reset}>Start Over</button>}
