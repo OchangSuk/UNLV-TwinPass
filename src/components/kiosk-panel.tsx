@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { personIds } from "@/lib/domain";
+import { personIds, registeredPersonIds } from "@/lib/domain";
 import { teamProfiles, type RegisteredPersonId } from "@/lib/people";
 
 type Phase = "IDLE" | "MODEL_LOADING" | "CAMERA" | "VISION" | "AUDIO_READY" | "RECORDING" | "VOICE" | "SUCCESS" | "REJECTED" | "ERROR";
@@ -24,7 +24,6 @@ declare global {
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 const AUDIO_RECORDING_SECONDS = 1;
-const VISION_PERSON: RegisteredPersonId = "changsuk";
 
 export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | Promise<void> }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -41,6 +40,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const countdownTimerRef = useRef<number | null>(null);
 
   const [phase, setPhase] = useState<Phase>("IDLE");
+  const [visionPerson, setVisionPerson] = useState<RegisteredPersonId>("changsuk");
   const [recognized, setRecognized] = useState<RegisteredPersonId | null>(null);
   const [visionConfidence, setVisionConfidence] = useState(0);
   const [voiceConfidence, setVoiceConfidence] = useState(0);
@@ -62,6 +62,24 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
       void serialPortRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    function selectVisionPerson(event: KeyboardEvent) {
+      if (phase !== "IDLE" || event.ctrlKey || event.altKey || event.metaKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, select, textarea")) return;
+
+      const index = Number(event.key) - 1;
+      const person = registeredPersonIds[index];
+      if (!person) return;
+
+      setVisionPerson(person);
+      console.info("[TwinPass] Vision identity selected", { person });
+    }
+
+    window.addEventListener("keydown", selectVisionPerson);
+    return () => window.removeEventListener("keydown", selectVisionPerson);
+  }, [phase]);
 
   async function persistResult(personId: PersonId, visionVerified: boolean, voiceVerified: boolean, visionScore: number, voiceScore: number | null) {
     const response = await fetch("/api/v1/demo-event", {
@@ -230,19 +248,19 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
 
     try {
       setSerialStatus("Vision 완료 · Audio 인증 시작");
-      setLastSerialEvent(`ARM:${VISION_PERSON} 전송 준비`);
+      setLastSerialEvent(`ARM:${visionPerson} 전송 준비`);
       setAudioTestMode(false);
       audioTestModeRef.current = false;
-      setRecognized(VISION_PERSON);
-      recognizedRef.current = VISION_PERSON;
+      setRecognized(visionPerson);
+      recognizedRef.current = visionPerson;
       pendingAudioRef.current = null;
       setVisionConfidence(1);
       visionConfidenceRef.current = 1;
       setVoiceConfidence(0);
       setPhase("VISION");
       await wait(350);
-      await armAudio(VISION_PERSON);
-      setLastSerialEvent(`ARM:${VISION_PERSON} 전송 완료`);
+      await armAudio(visionPerson);
+      setLastSerialEvent(`ARM:${visionPerson} 전송 완료`);
     }
     catch (error) {
       setPhase("ERROR");
