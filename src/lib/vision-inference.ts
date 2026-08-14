@@ -64,8 +64,8 @@ function loadRuntime() {
     script.async = true;
     script.onload = () => window.ort
       ? resolve(window.ort)
-      : reject(new Error("ONNX Runtime을 초기화하지 못했습니다."));
-    script.onerror = () => reject(new Error("ONNX Runtime 파일을 불러오지 못했습니다."));
+      : reject(new Error("Failed to initialize ONNX Runtime."));
+    script.onerror = () => reject(new Error("Failed to load the ONNX Runtime file."));
     document.head.appendChild(script);
   }).catch((error) => {
     runtimePromise = null;
@@ -112,7 +112,7 @@ function normalizeLabel(label: string): RegisteredPersonId | "OTHER" {
 function prepareImage(source: HTMLVideoElement | HTMLCanvasElement, runtime: OrtRuntime): PreparedImage {
   const sourceWidth = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const sourceHeight = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
-  if (!sourceWidth || !sourceHeight) throw new Error("카메라 프레임이 아직 준비되지 않았습니다.");
+  if (!sourceWidth || !sourceHeight) throw new Error("The camera frame is not ready yet.");
 
   const scale = Math.min(INPUT_SIZE / sourceWidth, INPUT_SIZE / sourceHeight);
   const resizedWidth = Math.round(sourceWidth * scale);
@@ -124,7 +124,7 @@ function prepareImage(source: HTMLVideoElement | HTMLCanvasElement, runtime: Ort
   canvas.width = INPUT_SIZE;
   canvas.height = INPUT_SIZE;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("카메라 프레임을 처리할 수 없습니다.");
+  if (!context) throw new Error("Unable to process the camera frame.");
 
   context.fillStyle = "rgb(114, 114, 114)";
   context.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
@@ -161,7 +161,7 @@ function intersectionOverUnion(left: Detection, right: Detection) {
 function decodeOutput(output: OrtTensor): Detection[] {
   const dimensions = output.dims.map(Number);
   if (dimensions.length !== 3 || dimensions[1] !== 4 + LABELS.length) {
-    throw new Error(`예상하지 못한 YOLO 출력 크기입니다: ${dimensions.join("x")}`);
+    throw new Error(`Unexpected YOLO output dimensions: ${dimensions.join("x")}`);
   }
 
   const data = output.data as Float32Array;
