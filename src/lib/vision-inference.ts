@@ -1,37 +1,20 @@
+import type { InferenceSession, Tensor as OrtTensor } from "onnxruntime-web";
 import type { RegisteredPersonId } from "./people";
 
-type EdgeImpulseProperties = {
-  image_input_width: number;
-  image_input_height: number;
-  classification_threshold?: number;
-  labels?: string[];
-  model_type?: string;
+type OrtRuntime = {
+  env: { wasm: { numThreads: number; wasmPaths: string } };
+  InferenceSession: {
+    create(modelUrl: string, options: {
+      executionProviders: string[];
+      graphOptimizationLevel: "all";
+    }): Promise<InferenceSession>;
+  };
+  Tensor: new (type: "float32", data: Float32Array, dimensions: number[]) => OrtTensor;
 };
-
-type EdgeImpulseResult = {
-  label: string;
-  value: number;
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-};
-
-type EdgeImpulseClassification = {
-  results: EdgeImpulseResult[];
-};
-
-type EdgeImpulseClassifierInstance = {
-  init(): Promise<void>;
-  getProperties(): EdgeImpulseProperties;
-  classify(features: number[]): EdgeImpulseClassification;
-};
-
-type EdgeImpulseClassifierConstructor = new () => EdgeImpulseClassifierInstance;
 
 declare global {
   interface Window {
-    EdgeImpulseClassifier?: EdgeImpulseClassifierConstructor;
+    ort?: OrtRuntime;
   }
 }
 
@@ -42,69 +25,78 @@ export type VisionIdentification = {
   box?: { x: number; y: number; width: number; height: number };
 };
 
-const MODEL_ROOT = "/models/vision-v2";
-// V2에는 other 학습 데이터가 없으므로 낮은 신뢰도의 강제 분류를 거절한다.
-const MIN_TEAM_CONFIDENCE = 0.65;
+type PreparedImage = {
+  tensor: OrtTensor;
+  sourceWidth: number;
+  sourceHeight: number;
+  scale: number;
+  padX: number;
+  padY: number;
+};
 
-let classifierPromise: Promise<EdgeImpulseClassifierInstance> | null = null;
-const scriptPromises = new Map<string, Promise<void>>();
+type Detection = {
+  classIndex: number;
+  confidence: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
 
-function loadScript(src: string) {
-  const existingPromise = scriptPromises.get(src);
-  if (existingPromise) return existingPromise;
+const MODEL_URL = "/models/yolo/twinpass-team-only-yolo11n-224.onnx";
+const RUNTIME_ROOT = "/models/yolo/runtime";
+const INPUT_SIZE = 224;
+const TEAM_THRESHOLD = 0.65;
+const IOU_THRESHOLD = 0.45;
+const MIN_LOG_SCORE = 0.001;
+const LABELS = ["Catherine", "Sihoon", "changsuk", "seoyeon"] as const;
 
-  const promise = new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
-    if (existing?.dataset.loaded === "true") {
-      resolve();
-      return;
-    }
+let sessionPromise: Promise<InferenceSession> | null = null;
+let runtimePromise: Promise<OrtRuntime> | null = null;
 
-    const script = existing ?? document.createElement("script");
-    script.src = src;
-    script.async = false;
-    script.addEventListener("load", () => {
-      script.dataset.loaded = "true";
-      resolve();
-    }, { once: true });
-    script.addEventListener("error", () => {
-      reject(new Error(`Vision 모델 파일을 불러오지 못했습니다: ${src}`));
-    }, { once: true });
-    if (!existing) document.head.appendChild(script);
+function loadRuntime() {
+  if (window.ort) return Promise.resolve(window.ort);
+  if (runtimePromise) return runtimePromise;
+
+  runtimePromise = new Promise<OrtRuntime>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${RUNTIME_ROOT}/ort.min.js`;
+    script.async = true;
+    script.onload = () => window.ort
+      ? resolve(window.ort)
+      : reject(new Error("ONNX Runtime을 초기화하지 못했습니다."));
+    script.onerror = () => reject(new Error("ONNX Runtime 파일을 불러오지 못했습니다."));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    runtimePromise = null;
+    throw error;
   });
-
-  scriptPromises.set(src, promise);
-  return promise;
+  return runtimePromise;
 }
 
 export function loadVisionModel() {
-  if (classifierPromise) return classifierPromise;
+  if (sessionPromise) return sessionPromise;
 
-  classifierPromise = (async () => {
-    await loadScript(`${MODEL_ROOT}/edge-impulse-standalone.js`);
-    await loadScript(`${MODEL_ROOT}/run-impulse.js`);
-
-    if (!window.EdgeImpulseClassifier) {
-      throw new Error("Edge Impulse Vision V2 모델을 초기화하지 못했습니다.");
-    }
-
-    const classifier = new window.EdgeImpulseClassifier();
-    await classifier.init();
-    const properties = classifier.getProperties();
-    console.info("[TwinPass Vision] Edge Impulse V2 model ready", {
-      modelType: properties.model_type,
-      input: `${properties.image_input_width}x${properties.image_input_height}`,
-      labels: properties.labels,
-      modelThreshold: properties.classification_threshold,
-      appThreshold: MIN_TEAM_CONFIDENCE,
+  sessionPromise = loadRuntime().then(async (runtime) => {
+    runtime.env.wasm.numThreads = 1;
+    runtime.env.wasm.wasmPaths = `${RUNTIME_ROOT}/`;
+    const session = await runtime.InferenceSession.create(MODEL_URL, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all",
     });
-    return classifier;
-  })().catch((error) => {
-    classifierPromise = null;
+    console.info("[TwinPass Vision] YOLO11n team-only model ready", {
+      model: MODEL_URL,
+      input: `${INPUT_SIZE}x${INPUT_SIZE}`,
+      labels: LABELS,
+      threshold: TEAM_THRESHOLD,
+      backend: "wasm",
+    });
+    return session;
+  }).catch((error) => {
+    sessionPromise = null;
     throw error;
   });
-
-  return classifierPromise;
+  return sessionPromise;
 }
 
 function normalizeLabel(label: string): RegisteredPersonId | "OTHER" {
@@ -117,103 +109,154 @@ function normalizeLabel(label: string): RegisteredPersonId | "OTHER" {
   }
 }
 
-function imageToPackedRgbFeatures(
-  source: HTMLVideoElement | HTMLCanvasElement,
-  width: number,
-  height: number,
-) {
+function prepareImage(source: HTMLVideoElement | HTMLCanvasElement, runtime: OrtRuntime): PreparedImage {
   const sourceWidth = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const sourceHeight = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   if (!sourceWidth || !sourceHeight) throw new Error("카메라 프레임이 아직 준비되지 않았습니다.");
 
+  const scale = Math.min(INPUT_SIZE / sourceWidth, INPUT_SIZE / sourceHeight);
+  const resizedWidth = Math.round(sourceWidth * scale);
+  const resizedHeight = Math.round(sourceHeight * scale);
+  const padX = Math.floor((INPUT_SIZE - resizedWidth) / 2);
+  const padY = Math.floor((INPUT_SIZE - resizedHeight) / 2);
+
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = INPUT_SIZE;
+  canvas.height = INPUT_SIZE;
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("카메라 프레임을 처리할 수 없습니다.");
 
-  const cropSize = Math.min(sourceWidth, sourceHeight);
-  const cropX = (sourceWidth - cropSize) / 2;
-  const cropY = (sourceHeight - cropSize) / 2;
-  context.drawImage(source, cropX, cropY, cropSize, cropSize, 0, 0, width, height);
+  context.fillStyle = "rgb(114, 114, 114)";
+  context.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+  context.drawImage(source, 0, 0, sourceWidth, sourceHeight, padX, padY, resizedWidth, resizedHeight);
 
-  const rgba = context.getImageData(0, 0, width, height).data;
-  const features = new Array<number>(width * height);
-  for (let pixel = 0, offset = 0; pixel < features.length; pixel++, offset += 4) {
-    features[pixel] = (rgba[offset] << 16) | (rgba[offset + 1] << 8) | rgba[offset + 2];
+  const rgba = context.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE).data;
+  const planeSize = INPUT_SIZE * INPUT_SIZE;
+  const chw = new Float32Array(planeSize * 3);
+  for (let pixel = 0, offset = 0; pixel < planeSize; pixel++, offset += 4) {
+    chw[pixel] = rgba[offset] / 255;
+    chw[planeSize + pixel] = rgba[offset + 1] / 255;
+    chw[planeSize * 2 + pixel] = rgba[offset + 2] / 255;
   }
-  return features;
+
+  return {
+    tensor: new runtime.Tensor("float32", chw, [1, 3, INPUT_SIZE, INPUT_SIZE]),
+    sourceWidth,
+    sourceHeight,
+    scale,
+    padX,
+    padY,
+  };
+}
+
+function intersectionOverUnion(left: Detection, right: Detection) {
+  const intersectionWidth = Math.max(0, Math.min(left.x2, right.x2) - Math.max(left.x1, right.x1));
+  const intersectionHeight = Math.max(0, Math.min(left.y2, right.y2) - Math.max(left.y1, right.y1));
+  const intersection = intersectionWidth * intersectionHeight;
+  const leftArea = Math.max(0, left.x2 - left.x1) * Math.max(0, left.y2 - left.y1);
+  const rightArea = Math.max(0, right.x2 - right.x1) * Math.max(0, right.y2 - right.y1);
+  return intersection / Math.max(leftArea + rightArea - intersection, Number.EPSILON);
+}
+
+function decodeOutput(output: OrtTensor): Detection[] {
+  const dimensions = output.dims.map(Number);
+  if (dimensions.length !== 3 || dimensions[1] !== 4 + LABELS.length) {
+    throw new Error(`예상하지 못한 YOLO 출력 크기입니다: ${dimensions.join("x")}`);
+  }
+
+  const data = output.data as Float32Array;
+  const candidates = dimensions[2];
+  const detections: Detection[] = [];
+
+  for (let candidate = 0; candidate < candidates; candidate++) {
+    let classIndex = 0;
+    let confidence = -Infinity;
+    for (let label = 0; label < LABELS.length; label++) {
+      const score = data[(4 + label) * candidates + candidate];
+      if (score > confidence) {
+        confidence = score;
+        classIndex = label;
+      }
+    }
+    if (confidence < MIN_LOG_SCORE) continue;
+
+    const centerX = data[candidate];
+    const centerY = data[candidates + candidate];
+    const width = data[candidates * 2 + candidate];
+    const height = data[candidates * 3 + candidate];
+    detections.push({
+      classIndex,
+      confidence,
+      x1: centerX - width / 2,
+      y1: centerY - height / 2,
+      x2: centerX + width / 2,
+      y2: centerY + height / 2,
+    });
+  }
+
+  const selected: Detection[] = [];
+  for (const candidate of detections.sort((left, right) => right.confidence - left.confidence)) {
+    const overlaps = selected.some((kept) =>
+      kept.classIndex === candidate.classIndex && intersectionOverUnion(kept, candidate) > IOU_THRESHOLD,
+    );
+    if (!overlaps) selected.push(candidate);
+  }
+  return selected;
 }
 
 export async function identifyPersonFromImage(
   source: HTMLVideoElement | HTMLCanvasElement,
 ): Promise<VisionIdentification> {
   const startedAt = performance.now();
-  const classifier = await loadVisionModel();
-  const properties = classifier.getProperties();
-  const features = imageToPackedRgbFeatures(
-    source,
-    properties.image_input_width,
-    properties.image_input_height,
-  );
-  const classification = classifier.classify(features);
-  const modelThreshold = properties.classification_threshold ?? 0;
-  const threshold = Math.max(modelThreshold, MIN_TEAM_CONFIDENCE);
-  const best = classification.results
-    .filter((item) => Number.isFinite(item.value))
-    .sort((left, right) => right.value - left.value)[0];
+  const [runtime, session] = await Promise.all([loadRuntime(), loadVisionModel()]);
+  const prepared = prepareImage(source, runtime);
+  const outputs = await session.run({ [session.inputNames[0]]: prepared.tensor });
+  const detections = decodeOutput(outputs[session.outputNames[0]]);
+  const best = detections[0];
+  const predictedLabel = best ? LABELS[best.classIndex] : "none";
+  const predictedConfidence = best?.confidence ?? 0;
 
-  if (!best || best.value < threshold) {
+  if (!best || best.confidence < TEAM_THRESHOLD) {
     const result: VisionIdentification = {
       person_id: "OTHER",
-      confidence: best?.value ?? 0,
-      label: best ? `low-confidence:${best.label}` : "none",
+      confidence: predictedConfidence,
+      label: best ? `low-confidence:${predictedLabel}` : "none",
     };
-    console.info("[TwinPass Vision] inference result", {
-      rawResults: classification.results.map(({ label, value }) => ({ label, confidence: value })),
-      threshold,
+    console.info("[TwinPass Vision] YOLO inference result", {
+      predictedLabel,
+      predictedConfidence,
+      threshold: TEAM_THRESHOLD,
       decision: result.person_id,
-      selectedLabel: result.label,
-      confidence: result.confidence,
+      detections: detections.slice(0, 10).map((item) => ({
+        label: LABELS[item.classIndex],
+        confidence: item.confidence,
+      })),
       elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
     });
     return result;
   }
 
-  const personId = normalizeLabel(best.label);
-  if (personId === "OTHER") {
-    const result: VisionIdentification = {
-      person_id: "OTHER",
-      confidence: best.value,
-      label: best.label,
-    };
-    console.info("[TwinPass Vision] inference result", {
-      rawResults: classification.results.map(({ label, value }) => ({ label, confidence: value })),
-      threshold,
-      decision: result.person_id,
-      selectedLabel: result.label,
-      confidence: result.confidence,
-      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
-    });
-    return result;
-  }
-
+  const x1 = Math.max(0, Math.min(prepared.sourceWidth, (best.x1 - prepared.padX) / prepared.scale));
+  const y1 = Math.max(0, Math.min(prepared.sourceHeight, (best.y1 - prepared.padY) / prepared.scale));
+  const x2 = Math.max(0, Math.min(prepared.sourceWidth, (best.x2 - prepared.padX) / prepared.scale));
+  const y2 = Math.max(0, Math.min(prepared.sourceHeight, (best.y2 - prepared.padY) / prepared.scale));
   const result: VisionIdentification = {
-    person_id: personId,
-    confidence: best.value,
-    label: best.label,
-    box: typeof best.x === "number" && typeof best.y === "number" &&
-      typeof best.width === "number" && typeof best.height === "number"
-      ? { x: best.x, y: best.y, width: best.width, height: best.height }
-      : undefined,
+    person_id: normalizeLabel(predictedLabel),
+    confidence: best.confidence,
+    label: predictedLabel,
+    box: { x: x1, y: y1, width: x2 - x1, height: y2 - y1 },
   };
-  console.info("[TwinPass Vision] inference result", {
-    rawResults: classification.results.map(({ label, value }) => ({ label, confidence: value })),
-    threshold,
+
+  console.info("[TwinPass Vision] YOLO inference result", {
+    predictedLabel,
+    predictedConfidence,
+    threshold: TEAM_THRESHOLD,
     decision: result.person_id,
-    selectedLabel: result.label,
-    confidence: result.confidence,
     box: result.box,
+    detections: detections.slice(0, 10).map((item) => ({
+      label: LABELS[item.classIndex],
+      confidence: item.confidence,
+    })),
     elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
   });
   return result;
