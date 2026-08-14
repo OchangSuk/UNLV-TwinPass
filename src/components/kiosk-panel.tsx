@@ -41,7 +41,7 @@ export function KioskPanel({ onEventCreated }: { onEventCreated?: () => void | P
   const countdownTimerRef = useRef<number | null>(null);
 
   const [phase, setPhase] = useState<Phase>("IDLE");
-  const [visionPerson, setVisionPerson] = useState<PersonId>("changsuk");
+  const [visionPerson, setVisionPerson] = useState<PersonId>("OTHER");
   const [recognized, setRecognized] = useState<RegisteredPersonId | null>(null);
   const [visionConfidence, setVisionConfidence] = useState(0);
   const [voiceConfidence, setVoiceConfidence] = useState(0);
